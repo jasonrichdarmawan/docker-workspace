@@ -50,13 +50,30 @@ if [[ -f "${AUTHORIZED_KEYS_FILE}" ]]; then
         "${AUTHORIZED_KEYS_FILE}" "${USER_HOME}/.ssh/authorized_keys"
 fi
 
-if [[ ! -s /ssh-host-keys/ssh_host_ed25519_key ]]; then
-    ssh-keygen -q -N '' -t ed25519 -f /ssh-host-keys/ssh_host_ed25519_key
-fi
-if [[ ! -s /ssh-host-keys/ssh_host_rsa_key ]]; then
-    ssh-keygen -q -N '' -t rsa -b 4096 -f /ssh-host-keys/ssh_host_rsa_key
-fi
-chmod 600 /ssh-host-keys/ssh_host_ed25519_key /ssh-host-keys/ssh_host_rsa_key
+ensure_host_key() {
+    local key_type="$1"
+    local key_path="$2"
+    shift 2
+
+    # Keep an existing, valid private key.
+    if [[ -s "${key_path}" ]] && ssh-keygen -y -f "${key_path}" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    # The key is missing, empty, or invalid. Remove any partial key pair.
+    rm -f "${key_path}" "${key_path}.pub"
+
+    # Generate a fresh private key and matching public key.
+    echo "Generating new ${key_type} host key at ${key_path}."
+    ssh-keygen -q -N '' -t "${key_type}" -f "${key_path}" "$@"
+}
+
+ensure_host_key ed25519 /ssh-host-keys/ssh_host_ed25519_key
+ensure_host_key rsa /ssh-host-keys/ssh_host_rsa_key -b 4096
+
+chmod 600 \
+    /ssh-host-keys/ssh_host_ed25519_key \
+    /ssh-host-keys/ssh_host_rsa_key
 
 mkdir -p /workspace /hf-cache
 chown "${USER_UID}:${USER_GID}" /workspace /hf-cache
