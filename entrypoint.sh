@@ -45,6 +45,10 @@ fi
 passwd --delete "${USERNAME}" >/dev/null
 
 USER_HOME="$(getent passwd "${USERNAME}" | cut -d: -f6)"
+# Docker creates parents for nested volume mount targets before this script
+# runs. When /home/${USERNAME}/.vscode-server is mounted, that can leave the
+# otherwise-empty home directory root-owned and cause useradd to preserve it.
+chown "${USER_UID}:${USER_GID}" "${USER_HOME}"
 install -d -m 700 -o "${USER_UID}" -g "${USER_GID}" "${USER_HOME}/.ssh"
 
 if [[ -f "${AUTHORIZED_KEYS_FILE}" ]]; then
