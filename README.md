@@ -21,13 +21,25 @@ Hugging Face assets stay on the host through bind mounts.
 The image has CUDA 12.2 by default. For older drivers, rebuild with a CUDA base
 image supported by the oldest target driver, for example:
 
-		docker build --build-arg CUDA_IMAGE=nvidia/cuda:12.6.3-devel-ubuntu24.04 -t cuda-dev:ssh .
+		docker build \
+			--build-arg CUDA_IMAGE=nvidia/cuda:12.6.3-devel-ubuntu24.04 \
+			-t cuda-dev:ssh .
 
 ## Build
 
 From this directory:
 
-		docker build -t cuda-dev:ssh .
+		docker build \
+			-t cuda-dev:ssh .
+
+To use proxy, for example:
+
+		docker build \
+			--network host \
+			--build-arg HTTP_PROXY="$HTTP_PROXY" \
+			--build-arg HTTPS_PROXY="$HTTPS_PROXY" \
+			--build-arg NO_PROXY="$NO_PROXY" \
+			-t cuda-dev:ssh .
 
 The micromamba binary platform is configurable at build time. The default,
 `linux-64`, is for `linux/amd64` images. For an ARM64 base image, use the
@@ -38,10 +50,10 @@ matching micromamba platform:
 Create project environments with micromamba after connecting to the container.
 The entrypoint assigns the micromamba root prefix to the runtime UID/GID, so the
 SSH user can create and update environments without `sudo`.
-To transfer an environment created interactively, commit the configured
-container to a new image before exporting it. For a reproducible long-term
-image, instead pin dependencies in an `environment.yml` or lock file and add
-the environment creation to the `Dockerfile`.
+The root prefix is stored in a named volume below, so environments and installed
+packages survive container recreation without committing a new image. For a
+reproducible long-term setup, also pin dependencies in an `environment.yml` or
+lock file and add the environment creation to the `Dockerfile`.
 
 ## Run with host projects and Hugging Face cache
 
@@ -49,6 +61,7 @@ Run this command **on the Docker host**. It maps the host's numeric UID/GID into
 the container. Numeric IDs, not usernames, control permissions on bind mounts.
 Therefore this works even when servers use different login names.
 
+		docker volume create cuda-dev-micromamba
 		docker volume create cuda-dev-ssh-host-keys
 		docker run -d --name cuda-dev \
 			--gpus all \
@@ -61,6 +74,7 @@ Therefore this works even when servers use different login names.
 			-v "$HOME/.ssh/authorized_keys:/run/secrets/authorized_keys:ro" \
 			-v /media/npu-tao/disk4T/jason:/workspace \
 			-v "${HF_HOME:-$HOME/.cache/huggingface}:/hf-cache" \
+			-v cuda-dev-micromamba:/opt/micromamba \
 			-v cuda-dev-ssh-host-keys:/ssh-host-keys \
 			cuda-dev:ssh
 
@@ -72,6 +86,13 @@ by replacing the second bind-mount source, for example:
 
 Use a **named volume** for `/ssh-host-keys`. Otherwise host keys change on each
 container recreation and VS Code/SSH will warn about a changed host key.
+
+Use the `cuda-dev-micromamba` named volume for `/opt/micromamba`. It stores the
+micromamba executable, package cache, and environments independently of the
+container, so interactive package and environment changes survive container
+recreation. Docker initializes an empty named volume with the image's existing
+`/opt/micromamba` contents on its first attachment. Do not replace this with an
+empty host-directory bind mount.
 
 The initial run copies the public keys from the mounted `authorized_keys` file.
 After changing keys, restart the container or recreate it. Password and root SSH
@@ -99,6 +120,7 @@ Then add the container entry:
 
 		Host cuda-dev
 			HostName 127.0.0.1
+			HostKeyAlias MIPLab-2-417-jason-2x-3090
 			Port 3333
 			User host-login-name
 			IdentityFile ~/.ssh/id_ed25519
@@ -133,7 +155,7 @@ Use `ProxyCommand` to run `nc` inside the WSL distribution:
 			User container-login-name
 			IdentityFile ~/.ssh/id_ed25519
 			IdentitiesOnly yes
-			ProxyCommand ssh cuda-dev-windows "wsl.exe -d Ubuntu -- nc 127.0.0.1 3333"
+			ProxyCommand ssh cuda-dev-windows "wsl.exe -d Ubuntu-24.04 -- nc %h %p"
 
 Replace `Ubuntu` with the WSL distribution that runs Docker. Run the following
 on Windows to list installed distributions:
@@ -153,21 +175,49 @@ The route is:
 
 		VS Code machine -> Windows SSH host -> wsl.exe -> WSL 127.0.0.1:3333 -> container:22
 
-## Move a configured container to another server
+## Move environments to another server
 
-To transfer a configured container, first capture the container filesystem
-as a new image, then export that image:
+The CUDA development image is independent of the mutable micromamba state.
+Build the same image on the destination, pull it from a registry, or transfer
+it once if rebuilding is impractical:
 
-		docker commit cuda-dev cuda-dev:reasonrag
-		docker save cuda-dev:reasonrag | gzip > cuda-dev-reasonrag.tar.gz
+		docker save cuda-dev:ssh | gzip > cuda-dev-ssh-image.tar.gz
 
-Copy `cuda-dev-reasonrag.tar.gz` to the destination host. There, import it:
+Copy `cuda-dev-ssh-image.tar.gz` to the destination host. There, import it:
 
-		gzip -dc cuda-dev-reasonrag.tar.gz | docker load
+		gzip -dc cuda-dev-ssh-image.tar.gz | docker load
+
+Stop the container before archiving its volumes. On the source host, run the
+following from the directory where the archives should be created:
+
+		docker stop cuda-dev
+		docker run --rm \
+			-v cuda-dev-micromamba:/from:ro \
+			-v "$PWD":/backup \
+			alpine tar -C /from -czf /backup/cuda-dev-micromamba.tar.gz .
+		docker run --rm \
+			-v cuda-dev-ssh-host-keys:/from:ro \
+			-v "$PWD":/backup \
+			alpine tar -C /from -czf /backup/cuda-dev-ssh-host-keys.tar.gz .
+
+Copy both archives to the destination host. `cuda-dev-micromamba.tar.gz`
+contains the created environments and installed packages. The SSH-host-key
+archive contains private keys, so transfer and store it securely. On the
+destination, create and restore both volumes before starting the container:
+
+		docker volume create cuda-dev-micromamba
+		docker volume create cuda-dev-ssh-host-keys
+		docker run --rm \
+			-v cuda-dev-micromamba:/to \
+			-v "$PWD":/backup:ro \
+			alpine tar -C /to -xzf /backup/cuda-dev-micromamba.tar.gz
+		docker run --rm \
+			-v cuda-dev-ssh-host-keys:/to \
+			-v "$PWD":/backup:ro \
+			alpine tar -C /to -xzf /backup/cuda-dev-ssh-host-keys.tar.gz
 
 Start the imported image using the destination host's identity and mount paths:
 
-		docker volume create cuda-dev-ssh-host-keys
 		docker run -d --name cuda-dev \
 			--gpus all \
 			--restart unless-stopped \
@@ -179,22 +229,27 @@ Start the imported image using the destination host's identity and mount paths:
 			-v "$HOME/.ssh/authorized_keys:/run/secrets/authorized_keys:ro" \
 			-v /path/to/projects:/workspace \
 			-v "${HF_HOME:-$HOME/.cache/huggingface}:/hf-cache" \
+			-v cuda-dev-micromamba:/opt/micromamba \
 			-v cuda-dev-ssh-host-keys:/ssh-host-keys \
-			cuda-dev:reasonrag
+			cuda-dev:ssh
 
 This is portable across different host **usernames and UID/GIDs**. PID (process
 ID) does not matter. At startup, the entrypoint creates the container SSH user
-using the destination values from `USER_UID` and `USER_GID`, then assigns
-`/opt/micromamba` to that identity. The captured micromamba environments remain
-available and can be modified by the new user.
+using the destination values from `USER_UID` and `USER_GID`, then assigns the
+micromamba volume to that identity. The restored environments remain available
+and can be modified by the new user.
 
-`docker commit` and `docker save` do not include mounted data. Copy these
-separately when needed:
+`docker save` does not include mounted data. Copy these separately when needed:
 
 - `/workspace`: host bind mount containing projects.
 - `/hf-cache`: host bind mount containing Hugging Face models and datasets.
+- `/opt/micromamba`: named volume containing the micromamba installation,
+	 package cache, and environments. Restore its archive to retain interactive
+	 environment changes.
 - `/ssh-host-keys`: named volume containing SSH server identity keys. Creating
-	 a fresh volume on the destination is recommended.
+	 a fresh volume on the destination creates a new SSH identity. Restore the
+	 archived volume above instead when clients must continue trusting the same
+	 container host key.
 - `/run/secrets/authorized_keys`: bind-mounted host public keys. Mount the
 	 destination host's authorized-key file when starting the imported image.
 

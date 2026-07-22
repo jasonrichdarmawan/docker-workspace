@@ -26,12 +26,14 @@ if [[ -z "${GROUP_NAME}" ]]; then
     if getent group "${GROUP_NAME}" >/dev/null; then
         GROUP_NAME="${USERNAME}-host"
     fi
+    echo "Creating group ${GROUP_NAME} with GID ${USER_GID}."
     groupadd --gid "${USER_GID}" "${GROUP_NAME}"
 fi
 
 # -o permits a UID collision with an image-provided account. The SSH account
 # still gets the requested numeric identity, which is what bind mounts require.
 if ! getent passwd "${USERNAME}" >/dev/null; then
+    echo "Creating user ${USERNAME} with UID ${USER_UID} and GID ${GROUP_NAME}."
     useradd --non-unique --uid "${USER_UID}" --gid "${GROUP_NAME}" \
         --create-home --shell /bin/bash "${USERNAME}"
 fi
@@ -81,6 +83,9 @@ chown "${USER_UID}:${USER_GID}" /workspace /hf-cache
 # Environments are created interactively by the runtime SSH user. This also
 # remaps environments captured in a committed image to the current host UID/GID.
 mkdir -p "${MAMBA_ROOT_PREFIX}/envs" "${MAMBA_ROOT_PREFIX}/pkgs"
-chown -R "${USER_UID}:${USER_GID}" "${MAMBA_ROOT_PREFIX}"
+chown "${USER_UID}:${USER_GID}" \
+    "${MAMBA_ROOT_PREFIX}" \
+    "${MAMBA_ROOT_PREFIX}/envs" \
+    "${MAMBA_ROOT_PREFIX}/pkgs"
 
 exec "$@"

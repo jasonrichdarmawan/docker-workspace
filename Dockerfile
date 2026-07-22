@@ -6,6 +6,10 @@ FROM ${CUDA_IMAGE}
 
 ARG MICROMAMBA_PLATFORM=linux-64
 
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai \
     MAMBA_ROOT_PREFIX=/opt/micromamba \
@@ -20,9 +24,13 @@ RUN apt-get update \
         git \
         openssh-server \
         tmux \
-    && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /opt/micromamba/bin \
-    && curl -Ls "https://micro.mamba.pm/api/micromamba/${MICROMAMBA_PLATFORM}/latest" \
+        nano \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /opt/micromamba/bin \
+    && curl -L \
+        --tlsv1.3 --tls-max 1.3 \
+        "https://micro.mamba.pm/api/micromamba/${MICROMAMBA_PLATFORM}/latest" \
         | tar -xj -C /opt/micromamba/bin --strip-components=1 bin/micromamba \
     && ln -s /opt/micromamba/bin/micromamba /usr/local/bin/micromamba \
     && printf '%s\n' \
