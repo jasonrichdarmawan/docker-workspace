@@ -88,4 +88,7 @@ chown "${USER_UID}:${USER_GID}" \
     "${MAMBA_ROOT_PREFIX}/envs" \
     "${MAMBA_ROOT_PREFIX}/pkgs"
 
+mkdir -p "${USER_HOME}/.vscode-server"
+chown "${USER_UID}:${USER_GID}" "${USER_HOME}/.vscode-server"
+
 exec "$@"

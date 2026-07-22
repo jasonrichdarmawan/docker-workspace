@@ -61,19 +61,25 @@ Run this command **on the Docker host**. It maps the host's numeric UID/GID into
 the container. Numeric IDs, not usernames, control permissions on bind mounts.
 Therefore this works even when servers use different login names.
 
+		docker volume create cuda-dev-vscode-server
 		docker volume create cuda-dev-micromamba
 		docker volume create cuda-dev-ssh-host-keys
+		USERNAME=$(id -un)
+		USER_UID=$(id -u)
+		USER_GID=$(id -g)
+		WORKSPACE=/media/npu-tao/disk4T/jason
 		docker run -d --name cuda-dev \
 			--gpus all \
 			--restart unless-stopped \
 			-p 127.0.0.1:3333:22 \
-			-e USERNAME="$(id -un)" \
-			-e USER_UID="$(id -u)" \
-			-e USER_GID="$(id -g)" \
+			-e USERNAME=$USERNAME \
+			-e USER_UID="$USER_UID" \
+			-e USER_GID="$USER_GID" \
 			-e AUTHORIZED_KEYS_FILE=/run/secrets/authorized_keys \
 			-v "$HOME/.ssh/authorized_keys:/run/secrets/authorized_keys:ro" \
-			-v /media/npu-tao/disk4T/jason:/workspace \
+			-v $WORKSPACE:/workspace \
 			-v "${HF_HOME:-$HOME/.cache/huggingface}:/hf-cache" \
+			-v cuda-dev-vscode-server:/home/$USERNAME/.vscode-server \
 			-v cuda-dev-micromamba:/opt/micromamba \
 			-v cuda-dev-ssh-host-keys:/ssh-host-keys \
 			cuda-dev:ssh
@@ -181,20 +187,29 @@ The CUDA development image is independent of the mutable micromamba state.
 Build the same image on the destination, pull it from a registry, or transfer
 it once if rebuilding is impractical:
 
-		docker save cuda-dev:ssh | gzip > cuda-dev-ssh-image.tar.gz
+		docker save cuda-dev:ssh | pv | gzip > cuda-dev-ssh-image.tar.gz
 
 Copy `cuda-dev-ssh-image.tar.gz` to the destination host. There, import it:
 
-		gzip -dc cuda-dev-ssh-image.tar.gz | docker load
+		pv -s "$(stat -c %s cuda-dev-ssh-image.tar.gz)" \
+			cuda-dev-ssh-image.tar.gz \
+			| gzip -dc \
+			| docker load
 
 Stop the container before archiving its volumes. On the source host, run the
 following from the directory where the archives should be created:
 
 		docker stop cuda-dev
 		docker run --rm \
+			-v cuda-dev-vscode-server:/from:ro \
+			alpine tar -C /from -cf - . \
+			| pv -s "$(docker run --rm -v cuda-dev-vscode-server:/from:ro alpine du -sb /from | awk '{print $1}')" \
+			| gzip > cuda-dev-vscode-server.tar.gz
+		docker run --rm \
 			-v cuda-dev-micromamba:/from:ro \
-			-v "$PWD":/backup \
-			alpine tar -C /from -czf /backup/cuda-dev-micromamba.tar.gz .
+			alpine tar -C /from -cf - . \
+			| pv -s "$(docker run --rm -v cuda-dev-micromamba:/from:ro alpine du -sb /from | awk '{print $1}')" \
+			| gzip > cuda-dev-micromambaz.tar.gz
 		docker run --rm \
 			-v cuda-dev-ssh-host-keys:/from:ro \
 			-v "$PWD":/backup \
@@ -205,12 +220,17 @@ contains the created environments and installed packages. The SSH-host-key
 archive contains private keys, so transfer and store it securely. On the
 destination, create and restore both volumes before starting the container:
 
+		docker volume create cuda-dev-vscode-server
 		docker volume create cuda-dev-micromamba
 		docker volume create cuda-dev-ssh-host-keys
 		docker run --rm \
+			-v cuda-dev-vscode-server:/to \
+			-i alpine tar -C /to -xzf - \
+			< <(pv -s "$(stat -c %s cuda-dev-vscode-server.tar.gz)" cuda-dev-vscode-server.tar.gz)
+		docker run --rm \
 			-v cuda-dev-micromamba:/to \
-			-v "$PWD":/backup:ro \
-			alpine tar -C /to -xzf /backup/cuda-dev-micromamba.tar.gz
+			-i alpine tar -C /to -xzf - \
+			< <(pv -s "$(stat -c %s cuda-dev-micromamba.tar.gz)" cuda-dev-micromamba.tar.gz)
 		docker run --rm \
 			-v cuda-dev-ssh-host-keys:/to \
 			-v "$PWD":/backup:ro \
@@ -229,6 +249,7 @@ Start the imported image using the destination host's identity and mount paths:
 			-v "$HOME/.ssh/authorized_keys:/run/secrets/authorized_keys:ro" \
 			-v /path/to/projects:/workspace \
 			-v "${HF_HOME:-$HOME/.cache/huggingface}:/hf-cache" \
+			-v cuda-dev-vscode-server:/home/$USERNAME/.vscode-server \
 			-v cuda-dev-micromamba:/opt/micromamba \
 			-v cuda-dev-ssh-host-keys:/ssh-host-keys \
 			cuda-dev:ssh
